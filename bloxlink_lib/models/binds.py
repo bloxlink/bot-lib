@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import math
-from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict, Annotated, Self, Type
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict, Annotated, Self, Type, overload
 
 from pydantic import Field, ValidationError
 
@@ -132,8 +132,16 @@ class GuildBind(BaseModel):
         if self.type == "group":
             self.subtype = "full_group" if self.criteria.group.dynamicRoles else "role_bind"
 
+    @overload
+    def from_v3(cls: Type[Self], guild_data: GuildData | dict) -> list[Self]:
+        ...
+
+    @overload
+    def from_v3(cls: Type[Self], guild_id: str, binds: list[GuildBind]) -> list[Self]:
+        ...
+
     @classmethod
-    def from_V3(cls: Type[Self], guild_data: GuildData | dict):
+    def from_v3(cls: Type[Self], *args) -> list[Self]:
         """Convert V3 binds to V4 binds."""
 
         whole_group_binds = getattr(
@@ -219,6 +227,44 @@ class GuildBind(BaseModel):
                         converted_binds.append(new_bind)
 
         return converted_binds
+
+    @classmethod
+    async def from_v3(cls: Type[Self], guild_data: GuildData | dict):
+        """Migrates binds from the V3 structure to V4 and optionally saves them to the database.
+
+        If POP_OLD_BINDS is true, the old binds will be removed from the database.
+        """
+
+        guild_data = await database.fetch_guild_data(
+            guild_id,
+            "roleBinds",
+            "groupIDs",
+            "migratedBindsToV4",
+        )
+
+        new_migrated_binds: list[GuildBind] = []
+
+        if not guild_data.migratedBindsToV4 and (guild_data.roleBinds or guild_data.groupIDs):
+            new_migrated_binds = GuildBind.from_v3(guild_data)
+
+        if new_migrated_binds:
+            # Remove duplicates
+            binds.extend(b for b in new_migrated_binds if b not in binds)
+
+            if SAVE_NEW_BINDS:
+                await database.update_guild_data(
+                    guild_id,
+                    binds=[b.model_dump(exclude_unset=True, by_alias=True)
+                           for b in binds],
+                    migratedBindsToV4=True,
+                )
+
+        # if POP_OLD_BINDS, remove v3 binds from the database
+        if POP_OLD_BINDS and guild_data.migratedBindsToV4:
+            await database.update_guild_data(guild_id, groupIDs=None, roleBinds=None, migratedBindsToV4=None)
+            return binds
+
+        return binds
 
     def calculate_highest_role(self, guild_roles: dict[str, RoleSerializable]) -> None:
         """Calculate the highest role in the guild for this bind."""
@@ -786,7 +832,7 @@ async def migrate_old_binds_to_v4(guild_id: str, binds: list[GuildBind]) -> list
     new_migrated_binds: list[GuildBind] = []
 
     if not guild_data.migratedBindsToV4 and (guild_data.roleBinds or guild_data.groupIDs):
-        new_migrated_binds = GuildBind.from_V3(guild_data)
+        new_migrated_binds = GuildBind.from_v3(guild_data)
 
     if new_migrated_binds:
         # Remove duplicates

@@ -3,7 +3,6 @@ from pydantic import Field, field_validator
 import hikari
 from .base import PydanticList, Snowflake, BaseModel, PydanticDict
 from ..validators import is_positive_number_as_str
-from .migrators import migrate_restrictions
 import bloxlink_lib.models.binds as binds_module
 
 
@@ -61,6 +60,25 @@ class GuildRestriction(BaseModel):
     reason: str | None = None
     type: RestrictionTypes
 
+    @classmethod
+    def from_v3(cls, old_restriction: dict[RestrictionTypes, dict[str, dict]]) -> list['GuildRestriction']:
+        if isinstance(old_restriction, list):
+            return old_restriction
+
+        new_guild_restrictions: list[GuildRestriction] = []
+
+        for restriction_type, restriction_data in old_restriction.items():
+            for restricted_id, restriction in restriction_data.items():
+                new_guild_restrictions.append(GuildRestriction(
+                    id=restricted_id,
+                    displayName=restriction["name"],
+                    addedBy=restriction["addedBy"],
+                    reason=restriction.get("reason"),
+                    type=restriction_type
+                ))
+
+        return new_guild_restrictions
+
     def __eq__(self, other):
         return self.id == other.id and self.type == other.type
 
@@ -106,7 +124,7 @@ class GuildData(BaseModel):
     @field_validator("restrictions", mode="before")
     @classmethod
     def transform_restrictions(cls: Type[Self], restrictions: dict[str, dict[str, GuildRestriction]]) -> list[GuildRestriction]:
-        return migrate_restrictions(restrictions)
+        return GuildRestriction.from_v3(restrictions)
 
     webhooks: Webhooks = None
 
